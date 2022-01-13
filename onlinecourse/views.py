@@ -1,8 +1,7 @@
 from django.shortcuts import render
 from django.http import HttpResponseRedirect
 # <HINT> Import any new Models here
-from .models import Question,Choice,Submission
-from .models import Course, Enrollment
+from .models import Course, Enrollment, Question, Choice, Submission, Lesson
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404, render, redirect
 from django.urls import reverse
@@ -71,19 +70,6 @@ def check_if_enrolled(user, course):
     return is_enrolled
 
 
-# CourseListView
-class CourseListView(generic.ListView):
-    template_name = 'onlinecourse/course_list_bootstrap.html'
-    context_object_name = 'course_list'
-
-    def get_queryset(self):
-        user = self.request.user
-        courses = Course.objects.order_by('-total_enrollment')[:10]
-        for course in courses:
-            if user.is_authenticated:
-                course.is_enrolled = check_if_enrolled(user, course)
-        return courses
-
 
 class CourseDetailView(generic.DetailView):
     model = Course
@@ -111,17 +97,28 @@ def enroll(request, course_id):
          # Collect the selected choices from exam form
          # Add each selected choice object to the submission object
          # Redirect to show_exam_result with the submission id
-#def submit(request, course_id):
-
+def submit(request, course_id):
+    user = request.user
+    course = get_object_or_404(Course, pk=course_id)
+    enrollment = Enrollment.objects.get(user=user, course=course)
+    #for answer in extract_answers(request):
+    #    Submission.objects.create(enrollment=enrollment, choices=choice)
+    submission=Submission.objects.create(enrollment=enrollment)
+    choices=extract_answers(request, submission)
+    #Submission.objects.create(enrollment=enrollment, choices=choices)
+    return HttpResponseRedirect(reverse(viewname='onlinecourse:show_exam_result', 
+            args=(course.id, submission.id)))
 
 # <HINT> A example method to collect the selected choices from the exam form from the request object
-def extract_answers(request):
+def extract_answers(request, submission):
     submitted_anwsers = []
     for key in request.POST:
         if key.startswith('choice'):
             value = request.POST[key]
             choice_id = int(value)
-            submitted_anwsers.append(choice_id)
+            choice = Choice.objects.get(id=choice_id)
+            submission.choices.add(choice)
+            submitted_anwsers.append(choice)
     return submitted_anwsers
 
 
@@ -131,60 +128,54 @@ def extract_answers(request):
         # Get the selected choice ids from the submission record
         # For each selected choice, check if it is a correct answer or not
         # Calculate the total score
-#def show_exam_result(request, course_id, submission_id):
-
-def submit(request, course_id):
-    course = get_object_or_404(Course, pk=course_id)
-    user = request.user
-    enrollment = Enrollment.objects.filter(user=user, course=course).get()
-    #x = enrollment.get();
-    submission = Submission.objects.create(enrollment_id = enrollment.id )
-    #submission.save()
-    answers =  extract_answers(request)
-    for a in answers:
-        temp_c = Choice.objects.filter(id = int(a)).get()
-        submission.chocies.add(temp_c)
-
-    submission.save()         
-    return HttpResponseRedirect(reverse(viewname='onlinecourse:show_exam_result', args=(course.id,submission.id ))) 
-
-
-
 def show_exam_result(request, course_id, submission_id):
-    course  =  get_object_or_404(Course, pk=course_id)
-    submission =      get_object_or_404(Submission, pk=submission_id)
-    total =  0
-    total_user =  0
-    q_results = {}
-    c_submits = {}
-    c_results = {}
-    for q in course.question_set.all():
-        q_total = 0;
-        q_total_user = 0;
-        for c in q.choice_set.all():
-            q_total += 1  
-            temp_right = c.is_correct
-            count =  submission.choices.filter(id = c.id).count()
+    context = {}
+    context ["course"]=course_id
+    context ["submission"]=submission_id
+    submission = Submission.objects.get(id=submission_id)
 
-            temp_user  = count > 0 
-            c_submits[c.id] = temp_user
-            c_results[c.id] = temp_user == temp_right
-            if temp_user == temp_right:
-                q_total_user += 1        
-        q_results[q.id] =  q.grade*(q_total_user / q_total)
-        total += q.grade 
-        total_user  += q_results[q.id]
-    context  = {}
-    context["course"]  =  course
-    context["submission"]  =  submission
-    #context["choices"]  =  submission.chocies.all()
-    context["total"]  =  total
-    context["total_user"]  =  total_user
-    context["q_results"]  =  q_results
-    context["c_submits"]  =  c_submits
-    context["c_results"]  =  c_results
-    context["grade"]  =  int((total_user/total)*100)
-    #print(vars(submission.chocies))
-    #user = request.user
-    #return render(request, 'onlinecourse/show_exam_result.html', context)
+    choices = []
+    for choice in submission.choices.all():
+        if choice.is_correct:
+            couleur='alert-success'
+        else:
+            couleur='alert-danger'
+        choices.append([choice.question.id,choice.texte,couleur])
+    allQuestions = []
+    submissionGrade = 0
+    maxGrade = 0
+    lessons = Lesson.objects.filter(course=course_id)
+    for lesson in lessons:
+        questions = Question.objects.filter(lesson=lesson.id)
+        for question in questions:
+            maxGrade = maxGrade + question.grade
+            note = 0
+            if question.is_get_score(submission.choices.all()):
+                note = question.grade
+                submissionGrade = submissionGrade + question.grade
+            allQuestions.append([question.id,question.texte,question.grade,note])
+            
+    grade = round(submissionGrade/maxGrade*100)
+    context = {
+        'grade':    grade,
+        'subG':     submissionGrade,
+        'maxG':     maxGrade,
+        'choices':  choices,
+        'course_id':  course_id,
+        'questions':  allQuestions,
+    }
     return render(request, 'onlinecourse/exam_result_bootstrap.html', context)
+
+
+# CourseListView
+class CourseListView(generic.ListView):
+    template_name = 'onlinecourse/course_list_bootstrap.html'
+    context_object_name = 'course_list'
+
+    def get_queryset(self):
+        user = self.request.user
+        courses = Course.objects.order_by('-total_enrollment')[:10]
+        for course in courses:
+            if user.is_authenticated:
+                course.is_enrolled = check_if_enrolled(user, course)
+        return courses
